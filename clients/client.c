@@ -5,6 +5,7 @@
 #include<string.h>
 #include<sys/types.h>
 #include<sys/socket.h>
+#include<sys/stat.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <arpa/inet.h>
@@ -12,6 +13,7 @@
 
 
 #define port "3010"
+#define pack_size 1024
 
 int mode=0;
 
@@ -66,13 +68,30 @@ int exists(char * filename){
     }
     return 0;
 }
-
+void print(int done,int total)
+{
+	int per=((done*100))/total;
+		fputs("[",stdout);
+	for(int i=0;i<(per/2);i++)
+		fputs("#",stdout);
+	for(int k=0;k<50-(per/2);k++)
+		fputs(" ",stdout);
+	
+	fputs("]",stdout);
+	char perce[100];
+	sprintf(perce,"%d%\n",per);
+	fputs(perce,stdout);
+	fputs("\033[A\033[2K",stdout);
+	rewind(stdout);
+}
 int sendfile(int sockfd)
 {
 	while(1)
 	{	
 		char mode_r[20];
 		char mode_w[20];
+		bzero(mode_r,sizeof(mode_r));
+		bzero(mode_r,sizeof(mode_w));
 		if(mode==1)
 		{
 			strcpy(mode_r,"rb");
@@ -84,19 +103,19 @@ int sendfile(int sockfd)
 			strcpy(mode_w,"w");
 		}
 		printf("%s\t%s\n",mode_r,mode_w);
-		char s_msg[100];
+		char s_msg[pack_size];
 		printf("Enter the command :\n>>>>");
 		scanf(" %[^\n]",s_msg);
 		if(comp(s_msg)==0)
 		{
-			if(send(sockfd,s_msg,100,0)==-1)
+			if(send(sockfd,s_msg,pack_size,0)==-1)
 			{
 				fprintf(stderr,"receiver: sending error\n");
 				return 0;
 			}
 			return 0;
 		}
-		char cmnd[100];
+		char cmnd[pack_size];
 		strcpy(cmnd,s_msg);
 		char *msg[2];
 		if(check(s_msg)==0)
@@ -115,23 +134,28 @@ int sendfile(int sockfd)
 				if(confirm=='n' || confirm=='N')
 					continue;
 			}
-			if(send(sockfd,cmnd,100,0)==-1)
+			if(send(sockfd,cmnd,pack_size,0)==-1)
 			{
 				fprintf(stderr,"receiver: sending error\n");
 				return 0;
 			}
-			char r_msg[100];
-			if(recv(sockfd,r_msg,100,0)==-1)
+			char r_msg[pack_size];
+			bzero(r_msg,sizeof(r_msg));
+			if(recv(sockfd,r_msg,pack_size,0)==-1)
 			{
 				fprintf(stderr,"client:receiving error\n");
 				break;
 			}
+			size_t t_size,temp=0;
 			if(strcmp(r_msg,"-20")==0)
 			{
-				printf("File doesnot exist\n");
+				printf("File doesnot exist in server side\n");
 				continue;
 			}
-
+			else
+				sscanf(r_msg,"%ld",&t_size);
+			
+			
 			FILE *ptr;
 			ptr=fopen(msg[1],mode_w);
 			if(ptr==NULL)
@@ -140,27 +164,28 @@ int sendfile(int sockfd)
 				fclose(ptr);
 				continue;
 			}
-			fprintf(ptr,"%s",r_msg);
-			if(strcmp(r_msg,"endi")==0)
-				continue;
-			while(1)
+			int left_size=t_size;
+			int ki=0;
+			char r_msgf[pack_size];
+			bzero(r_msgf,sizeof(r_msgf));
+			while((ki=recv(sockfd,r_msgf,sizeof(r_msgf),0))>=0)
 			{
-				if(recv(sockfd,r_msg,100,0)==-1)
-				{
-					fprintf(stderr,"client:receiving error\n");
-					break;
-				}
-				if(strcmp(r_msg,"-20")==0)
+				if(strcmp(r_msgf,"-20")==0)
 				{
 					printf("File doesnot exist\n");
 					break;
 				}
-				if(strcmp(r_msg,"endi")==0)
-				{
+				fwrite(r_msgf,sizeof(char),ki,ptr);
+				left_size-=ki;
+				temp+=ki;
+				bzero(r_msgf,sizeof(r_msgf));
+				
+				print(temp,t_size);
+				
+				if(left_size<=0)
 					break;
-				}
-				fprintf(ptr,"%s",r_msg);
 			}
+			printf("File Received:100%\n");
 			fclose(ptr);
 		}
 		else if(strcmp(msg[0],"post")==0 && strlen(msg[1])>0)
@@ -169,10 +194,10 @@ int sendfile(int sockfd)
 			ptr=fopen(msg[1],mode_r);
 			if(ptr==NULL)
 			{
-				printf("Error in opening the file\n");
+				printf("File does not exist\n");
 				continue;
 			}
-			if(send(sockfd,cmnd,100,0)==-1)
+			if(send(sockfd,cmnd,pack_size,0)==-1)
 			{
 				fprintf(stderr,"receiver: sending error\n");
 				return 0;
@@ -199,22 +224,50 @@ int sendfile(int sockfd)
 					continue;
 				}
 			}
-			char s_fmsg[100];
-			while(fgets(s_fmsg,100,ptr)!=NULL)
+			char s_fmsg[pack_size];
+			bzero(s_fmsg,sizeof(s_fmsg));
+			struct stat st;
+			stat(msg[1],&st);
+			size_t total_size=st.st_size;
+			
+			char size[pack_size];
+			sprintf(size,"%ld",total_size);
+			
+			if(send(sockfd,size,sizeof(size),0)==-1)
 			{
-				if(send(sockfd,s_fmsg,100,0)==-1)
-				{
-					fprintf(stderr,"server:sending error\n");
-					fclose(ptr);
-					return 0;
-				}
-			}
-			//to end the file
-			if(send(sockfd,"endi",100,0)==-1)
-			{
-				fprintf(stderr,"server:sending error\n");
+				fprintf(stderr,"client:sending error\n");
 				fclose(ptr);
+				break;
 			}
+			
+			int left_size=total_size;
+			fseek(ptr,0L,SEEK_SET);
+			while(1)
+			{
+				int n;
+				if(left_size>=pack_size)
+				{
+					fread(s_fmsg,1,sizeof(s_fmsg),ptr);
+					n=send(sockfd,s_fmsg,sizeof(s_fmsg),0);
+				}
+				else
+				{
+					fread(s_fmsg,1,left_size,ptr);
+					n=send(sockfd,s_fmsg,left_size,0);
+				}
+				if(n==-1)
+				{
+					fprintf(stderr,"Client:sending error\n");
+					fclose(ptr);
+					break;
+				}
+				bzero(s_fmsg,sizeof(s_fmsg));
+				print(total_size-left_size,total_size);
+				left_size-=n;
+				if(left_size<=0)
+					break;
+			}
+			printf("Uploaded: 100%\n");
 			fclose(ptr);
 		}
 		else if(strcmp(msg[0],"mode")==0)
@@ -234,7 +287,7 @@ int sendfile(int sockfd)
 				printf("Invalid command\n");
 			if(flag==1)
 			{
-				if(send(sockfd,cmnd,100,0)==-1)
+				if(send(sockfd,cmnd,pack_size,0)==-1)
 				{
 					fprintf(stderr,"receiver: sending error\n");
 					return 0;
@@ -296,9 +349,9 @@ int main(int argc,char *argv[])
 		
 	printf("System connecting to:%s\n",address);
 	freeaddrinfo(res);
-	char flag='y';
+	char flag[1];
 	int acc=0;
-	while(flag=='y')
+	while(1)
 	{
 		char r_msg[100];
 		bzero(r_msg,sizeof(r_msg));
@@ -327,10 +380,12 @@ int main(int argc,char *argv[])
 		{
 			printf("Success\n");
 			acc=1;
-			printf("\t\t*****post <filename> to send the file*****\n");
-			printf("\t\t*****get <filename> to request for file*****\n");
-			printf("\t\t*****mode <mode> to change the mode*\n");
-			printf("\t\t*****Default mode is ascii*****\n");
+			printf("=======================================\n");
+			printf("post <filename> to send the file\n");
+			printf("get <filename> to request for file\n");
+			printf("mode <mode> to change the mode\n");
+			printf("*****Default mode is ascii*****\n");
+			printf("=======================================\n");
 			break;
 		}
 		else if(strcmp(r_msg,"0")==0)
@@ -339,7 +394,16 @@ int main(int argc,char *argv[])
 			printf("User is active\n");
 			
 		printf("Do you want to try again (y/n):");
-		scanf(" %c",&flag);
+		scanf(" %s",flag);
+		if(flag[0]=='n')
+		{
+			if(send(sockfd,flag,sizeof(flag),0)==-1)
+			{
+				fprintf(stderr,"client: sending error\n");
+				exit(1);
+			}
+			break;
+		}
 	}
 	if(acc==1)
 		sendfile(sockfd);

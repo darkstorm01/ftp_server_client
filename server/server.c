@@ -1,5 +1,4 @@
 //18CS01031
-//Sir, I have uploaded the assignment earlier, later the other functionalities are added and the submittes.
 
 #include<stdio.h>
 #include<stdlib.h>
@@ -20,6 +19,7 @@
 #define queue_size 20  //max queue for listening
 
 #define maxusers 30
+#define pack_size 1024
 
 typedef struct node
 {
@@ -109,6 +109,7 @@ void tokenize(char *msg[],char *r_msg)
 	msg[1]=strtok(NULL,delimit);
 }
 
+
 int exists(char * filename){
     FILE *file;
     if (file = fopen(filename, "r")){
@@ -122,9 +123,11 @@ void sendfile(int new_sockfd, char userid[])
 {
 	int mode=0;
 	char mode_r[20],mode_w[20];
+	bzero(mode_r,sizeof(mode_r));
+	bzero(mode_r,sizeof(mode_w));
 	while(1)
 	{
-		char r_msg[100];
+		char r_msg[pack_size];
 		if(mode==1)
 		{
 			strcpy(mode_r,"rb");
@@ -135,14 +138,12 @@ void sendfile(int new_sockfd, char userid[])
 			strcpy(mode_r,"r");
 			strcpy(mode_w,"w");
 		}
-		printf("%s\t%s\n",mode_r,mode_w);
 		bzero(r_msg,sizeof(r_msg));
-		if(recv(new_sockfd,r_msg,100,0)==-1)
+		if(recv(new_sockfd,r_msg,pack_size,0)==-1)
 		{
 			fprintf(stderr,"server: receiving error\n");
 			//break;
 		}
-		printf("%s\n",r_msg);
 		if(comp(r_msg)==0)
 		{
 			user=update(user,userid);
@@ -189,37 +190,64 @@ void sendfile(int new_sockfd, char userid[])
 		else if(strcmp(msg[0],"get")==0)
 		{
 			FILE *ptr;
+			
 			char filepath[100];
 			bzero(filepath,sizeof(filepath));
 			strcpy(filepath,userid);
 			strcat(filepath,"/");
 			strcat(filepath,msg[1]);
-			ptr=fopen(filepath,mode_r);
-			if(ptr==NULL)
+			if(!exists(filepath))
 			{
 				if(send(new_sockfd,"-20",3,0)==-1)
 				{
 					fprintf(stderr,"server:sending error\n");
 					fclose(ptr);
-					//continue;
+					break;
 				}
+				continue;
 			}
-			char s_msg[100];
-			while(fgets(s_msg,100,ptr)!=NULL)
-			{
-				if(send(new_sockfd,s_msg,100,0)==-1)
+			struct stat st;
+			stat(filepath,&st);
+			size_t total_size=st.st_size;
+			char size[pack_size];
+			sprintf(size,"%ld",total_size);
+			
+				if(send(new_sockfd,size,strlen(size),0)==-1)
 				{
 					fprintf(stderr,"server:sending error\n");
 					fclose(ptr);
 					break;
 				}
-			}
-			//to end the file
-			if(send(new_sockfd,"endi",100,0)==-1)
+				
+			sleep(1);
+			ptr=fopen(filepath,mode_r);
+			fseek(ptr,0L,SEEK_SET);
+			char s_msg[pack_size];
+			bzero(s_msg,sizeof(s_msg));
+			int left_size=total_size;
+			while(1)
 			{
-				fprintf(stderr,"server:sending error\n");
-				fclose(ptr);
-				break;
+				int n;
+				if(left_size>=pack_size)
+				{
+					fread(s_msg,1,sizeof(s_msg),ptr);
+					n=send(new_sockfd,s_msg,sizeof(s_msg),0);
+				}
+				else
+				{
+					fread(s_msg,1,left_size,ptr);
+					n=send(new_sockfd,s_msg,left_size,0);
+				}
+				if(n==-1)
+				{
+					fprintf(stderr,"server:sending error\n");
+					fclose(ptr);
+					break;
+				}
+				left_size-=n;
+				if(left_size<=0)
+					break;
+				bzero(s_msg,sizeof(s_msg));
 			}
 			fclose(ptr);
 			FILE *ptr1;
@@ -263,26 +291,34 @@ void sendfile(int new_sockfd, char userid[])
 					return ;
 				}
 			}
+			
+			char fs[pack_size];
+			bzero(fs,sizeof(fs));
+			if(recv(new_sockfd,fs,pack_size,0)==-1)
+			{
+				fprintf(stderr,"Receiving error\n");
+				return ;
+			} 
+			
+			int total_size=atoi(fs);
+			int left_size=total_size;
+			
 			ptr=fopen(filepath,mode_w);
 			if(ptr==NULL)
 			{
 				printf("Cannot open the file\n");
 				return ;
 			}
-			char r_msgf[100];
-			while(1)
+			char r_msgf[pack_size];
+			bzero(r_msgf,sizeof(r_msgf));
+			int ki=0;
+			while((ki=recv(new_sockfd,r_msgf,pack_size,0))>=0)
 			{
-				if(recv(new_sockfd,r_msgf,100,0)==-1)
-				{
-					fprintf(stderr,"server:receiving error\n");
-					fclose(ptr);
+				fwrite(r_msgf,sizeof(char),ki,ptr);
+				left_size-=ki;
+				bzero(r_msgf,sizeof(r_msgf));
+				if(left_size<=0)
 					break;
-				}
-				if(strcmp(r_msgf,"endi")==0)
-				{
-					break;
-				}
-				fputs(r_msgf,ptr);
 			}
 			fclose(ptr);
 			FILE *ptr1;
@@ -302,6 +338,7 @@ void sendfile(int new_sockfd, char userid[])
 void connection(int new_sockfd)
 {
 	char userid[100];
+	int flag=0;
 	while(1)
 	{
 		char r_mg1[100];
@@ -314,12 +351,18 @@ void connection(int new_sockfd)
 			fprintf(stderr,"server: receiving error\n");
 			exit(1);
 		}
+		if(strcmp(r_mg1,"n")==0)
+			break;
+		if(comp(r_mg1)==0)
+			break;
 		//printf("%s\t%ld\n",r_mg1,strlen(r_mg1));
 		if(recv(new_sockfd,r_mg2,100,0)==-1)
 		{
 			fprintf(stderr,"server: receiving error\n");
 			exit(1);
 		}
+		if(comp(r_mg2)==0)
+			break;
 		//printf("%s\t%ld\n",r_mg2,strlen(r_mg2));
 		int isuser=0;
 		int *ptr1=&isuser;
@@ -339,6 +382,7 @@ void connection(int new_sockfd)
 			strcat(data," has looged in.\n");
 			fputs(data,ptr);
 			fclose(ptr);
+			flag=1;
 			break;
 		}
 		else if(isuser==-1)
@@ -358,12 +402,16 @@ void connection(int new_sockfd)
 			}		
 		}
 	}
-	sendfile(new_sockfd,userid);
+	if(flag==1)
+		sendfile(new_sockfd,userid);
 }
 
 //to create a new user in server
 void *adduser()
 {
+	printf("\n=================================\n");
+	printf("Enter createuser to create a user\n");
+	printf("=================================\n");
 	while(1)
 	{
 		char cmnd[100];
@@ -444,8 +492,8 @@ int main()
 	//A thread is created which will be in while loop in order to create a user.
 	//A user can be created at server side only.
 	//If a user is active then he/she can't login from other terminal.
-	/*pthread_t use;
-	pthread_create(&use,NULL,&adduser,NULL);*/
+	pthread_t use;
+	pthread_create(&use,NULL,&adduser,NULL);
 	int sockfd,yes=1;	
 	struct addrinfo hints, *res,*temp;
 	memset(&hints,0,sizeof hints);
@@ -499,13 +547,13 @@ int main()
 	client*/
 	pthread_t t[maxusers];
 	
-	//for(int i=0;i<maxusers;i++)
-		pthread_create(&t[0],NULL,&accept_conn,(void *)&sockfd);
+	for(int i=0;i<maxusers;i++)
+		pthread_create(&t[i],NULL,&accept_conn,(void *)&sockfd);
 
-	//for(int i=0;i<maxusers;i++)
-		pthread_join(t[0],NULL);
+	for(int i=0;i<maxusers;i++)
+		pthread_join(t[i],NULL);
 	
-	//pthread_join(use,NULL);
+	pthread_join(use,NULL);
 	close(sockfd);
 	return 0;
 }
